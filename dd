@@ -1,6 +1,7 @@
 # coding=utf-8
-import tensorflow as tf
-from tensorflow.contrib import rnn
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
 import numpy as np
 
@@ -15,81 +16,81 @@ class LSTM():
 		self.field_embed_size = 64
 		self.type_embed_size = 64
 		self.hidden_size = 256
-		self.att_vec_size = 256
 
 		# Embedding layers
 
 		# embedding table of ASDL production rules (constructors), one for each ApplyConstructor action,
         # the last entry is the embedding for Reduce action
-        prod_embeddings = tf.get_variable("prod_embeddings", [len(transition_system.grammar) + 1, action_embed_size])
-		prod_embed = tf.nn.embedding_lookup(prod_embeddings, transition_system.grammar)
+        self.production_embed = nn.Embedding(len(transition_system.grammar) + 1, action_embed_size)
 
 		 # embedding table for ASDL fields in constructors
-		field_embeddings = tf.get_variable("field_embeddings", [len(transition_system.grammar.fields), field_embed_size])
-		field_embed = tf.nn.embedding_lookup(field_embeddings, transition_system.grammar.fields)
+        self.field_embed = nn.Embedding(len(transition_system.grammar.fields), field_embed_size)
 
 		# embedding table for ASDL types
-		type_embeddings = tf.get_variable("type_embeddings", [len(transition_system.grammar.types), type_embed_size])
-		type_embed = tf.nn.embedding_lookup(type_embeddings, transition_system.grammar.types)
+        self.type_embed = nn.Embedding(len(transition_system.grammar.types), type_embed_size)
 
-		# LSTM
+        nn.init.xavier_normal(self.production_embed.weight.data)
+        nn.init.xavier_normal(self.field_embed.weight.data)
+        nn.init.xavier_normal(self.type_embed.weight.data)
 
+		# LSTMs
 		input_dim = action_embed_size # previous action
-		# frontier info
+		# parent info
 		input_dim += action_embed_size
 		input_dim += field_embed_size
 		input_dim += type_embed_size
 		input_dim += hidden_size
 
-		input_dim += att_vec_size # input feeding
+		input_dim += hidden_size # input feeding
 
 		self.input_dim = input_dim
 
-		lstm = tf.nn.rnn_cell.BasicLSTMCell(hidden_size)
+		self.lstm_cell = nn.LSTMCell(input_dim, hidden_size)
 
-		initial_state = cell.zero_state(batch_size, tf.float32)
+		self.lstm_cell_init = nn.Linear(hidden_size, hidden_size)
 
-		self.cell = tf.nn.rnn_cell.BasicLSTMCell(hidden_size)
+        self.production_readout_b = nn.Parameter(torch.FloatTensor(len(transition_system.grammar) + 1).zero_())
 
-		self.input_data = tf.placeholder(tf.int32, [batch_size, input_dim])
-		self.target_data = tf.placeholder(tf.int32, [batch_size, input_dim])
+        # dropout layer
+        self.dropout = nn.Dropout(dropout)
 
-	def step(self, x, h_tm1):
-		# h_t: (batch_size, hidden_size)
-
-		h_t, cell_t = self.cell(x, h_tm1)
-		att_t = 
-
+        self.new_long_tensor = torch.LongTensor
+        self.new_tensor = torch.FloatTensor
 
 
 	def lstm(self, batch):
 
 		batch_size = len(batch)
 
-		zero_action_embed = tf.Variable(tf.zeros([action_embed_size])
+		zero_action_embed = Variable(self.new_tensor(action_embed_size).zero_())
+
+		out_vecs = []
+		history_states = []
 
 		for t in range(batch.max_action_num):
 			if t == 0:
-				x = tf.Variable(tf.zeros([batch_size, self.input_dim]))
+				x = Variable(self.new_tensor(batch_size, self.lstm_cell.input_size).zero_(), requires_grad=False)
 
 				offset = action_embed_size
 				offset += att_vec_size
 				offset += action_embed_size
 				offset += field_embed_size
 
-				x[:, offset: offset + self.type_embed_size] = self.type_embed(tf.Variable([self.grammar.type2id[self.grammar.root_type] for e in batch.examples])))
+				x[:, offset: offset + args.type_embed_size] = self.type_embed(Variable(self.new_long_tensor(
+					[self.grammar.type2id[self.grammar.root_type] for e in batch.examples])))
 
 			else:
 				a_tm1_embeds = []
 				for example in batch.examples:
+					# action t -1
 					if t < len(example.tgt_actions):
 						a_tm1 = example.tgt_actions[t - 1]
 						if isinstance(a_tm1.action, ApplyRuleAction):
-							a_tm1_embed = self.prod_embed
+                            a_tm1_embed = self.production_embed.weight[self.grammar.prod2id[a_tm1.action.production]]
 						elif isinstance(a_tm1.action, ReduceAction):
-							a_tm1_embed = self.prod_embed
-						else:
-							a_tm1_embed = self.primitive.embed
+                            a_tm1_embed = self.production_embed.weight[len(self.grammar)]
+						else: #GetTokenAction
+							a_tm1_embed = 
 					else:
 						a_tm1_embed = zero_action_embed
 
@@ -97,42 +98,36 @@ class LSTM():
 
 				a_tm1_embeds = torch.stack(a_tm1_embeds)
 
-				inputs = [a_tm1_embeds]
-				inputs.append(att_tm1)
-				parent_prod_embed = self.prod_embed(batch.get_frontier_prod_idx(t))
-				inputs.append(parent_prod_embed)
-				parent_field_embed = self.field_embed(batch.get_frontier_field_idx(t))
-				inputs.append(parent_field_embed)
-				parent_field_type_embed = self.field_embed(batch.get_frontier_field_type_idx(t))
-				inputs.append(parent_field_type_embed)
+				inputs = [a_tm1_embeds] # previous action
+				inputs.append(out_tm1) # input feeding
+				# parent info
+
+				parent_production_embed = self.production_embed(batch.get_frontier_prod_idx(t))
+                inputs.append(parent_production_embed)
+                parent_field_embed = self.field_embed(batch.get_frontier_field_idx(t))
+                inputs.append(parent_field_embed)
+                parent_field_type_embed = self.type_embed(batch.get_frontier_field_type_idx(t))
+                inputs.append(parent_field_type_embed)
 
 				actions_t = [e.tgt_actions[t] if t < len(e.tgt_actions) else None for e in batch.examples]
-				parent_states = 
-				parent_cells = 
+				parent_states = torch.stack([history_states[p_t][0][batch_id]
+                                                 for batch_id, p_t in
+                                                 enumerate(a-_t.parent_t if a_t else 0 for a_t in actions_t)])
 				inputs.append(parent_states)
 
-				x = x.reshape()
+				x = torch.cat(inputs, dim=-1)
 
-		self.initial_state = cell.zero_state(batch_size, tf.float32)
+			h_t, cell_t = self.lstm_cell(x, h_tm1)
 
-		# outputs : [batch_size, input_dim, hidden_size]
-		outputs, last_state = tf.nn.dynamic_rnn(cell, inputs, initial_state=initial_state, dtype=tf.float32)
-		# output : [batch_size * input_dim, hidden_size]
-		output = tf.reshape(outputs, [-1, hidden_size]) 
+			out_vecs.append(h_t)
+			history_states.append((h_t, cell_t))
 
-		with tf.variable_scope('rnnlm'):
-		softmax_w = tf.get_variable("softmax_w", [hidden_size, vocab_size])
-		softmax_b = tf.get_variable("softmax_b", [vocab_size])
+			h_tm1 = (h_t, cell_t)
+			out_tm1 = h_t
 
-		self.logits = tf.matmul(output, softmax_w) + softmax_b
-		self.probs = tf.nn.softmax(logits)
+		out_vecs = torch.stack(out_vecs, dim=0)
+		return out_vecs
 
-		loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=logits, labels=traget_data))
 
-		tvars = tf.trainable_variables()
-		grads, _ = tf.clip_by_global_norm(tf.gradients(loss, tvars), grad_clip)
-		optimizer = tf.train.AdamOptimizer(learning_rate)
-		train_step = optimizer.apply_gradients(zip(grads, tvars))
-		
-
+		############
 
